@@ -857,6 +857,7 @@ class Context:
         self._cookie_verify_helper = None
 
         self.set_mode(_lib.SSL_MODE_ENABLE_PARTIAL_WRITE)
+        self._ex_data = {}
         if version is not None:
             self.set_min_proto_version(version)
             self.set_max_proto_version(version)
@@ -1714,6 +1715,35 @@ class Context:
             self._cookie_verify_helper.callback,
         )
 
+    def set_ex_data(self, idx, data):
+        """
+        Set application-specific data for this Context to be retrieved by get_ex_data
+
+        :param idx: A unique integer identifying the data
+        :param data: The data to be stored
+        :return: None
+        """
+        if not isinstance(idx, int):
+            raise TypeError("idx must be an int.")
+        self._ex_data[idx] = data
+        result = _lib.SSL_CTX_set_ex_data(self._context, idx, _ffi.new_handle(data))
+        if not result:
+            raise Exception("Unable to set ex data on SSL context")
+
+    def get_ex_data(self, idx):
+        """
+        Get application-specific data for this Context that was set by get_ex_data
+
+        :param idx: A unique integer identifying the data
+        :return: The data requested
+        """
+        if not isinstance(idx, int):
+            raise TypeError("idx must be an int.")
+
+        data_ptr = _lib.SSL_CTX_get_ex_data(self._context, idx)
+        if data_ptr == _ffi.NULL:
+            return None
+        return self._ex_data.get(idx)
 
 class Connection:
     _reverse_mapping = WeakValueDictionary()
@@ -1756,6 +1786,8 @@ class Connection:
         self._cookie_verify_helper = context._cookie_verify_helper
 
         self._reverse_mapping[self._ssl] = self
+
+        self._ex_data = {}
 
         if socket is None:
             self._socket = None
@@ -2636,6 +2668,36 @@ class Connection:
     def is_server(self):
         """:return: True if Context is working in Server Mode, False otherwise"""
         return _lib.SSL_is_server(self._ssl)
+
+    def set_ex_data(self, idx, data):
+        """
+        Set application-specific data for this Connection to be retrieved by get_ex_data
+
+        :param idx: A unique integer identifying the data
+        :param data: The data to be stored
+        :return: None
+        """
+        if not isinstance(idx, int):
+            raise TypeError("idx must be an int.")
+        self._ex_data[idx] = data
+        result = _lib.SSL_set_ex_data(self._ssl, idx, _ffi.new_handle(data))
+        if not result:
+            raise Exception("Unable to set ex data on SSL connection")
+
+    def get_ex_data(self, idx):
+        """
+        Get application-specific data for this Connection that was set by get_ex_data
+
+        :param idx: A unique integer identifying the data
+        :return: The data requested
+        """
+        if not isinstance(idx, int):
+            raise TypeError("idx must be an int.")
+
+        data_ptr = _lib.SSL_get_ex_data(self._ssl, idx)
+        if data_ptr == _ffi.NULL:
+            return None
+        return self._ex_data.get(idx)
 
     def get_session(self):
         """
