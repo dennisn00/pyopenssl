@@ -127,6 +127,21 @@ __all__ = [
     "SSL_CB_CONNECT_EXIT",
     "SSL_CB_HANDSHAKE_START",
     "SSL_CB_HANDSHAKE_DONE",
+    "SSL_EXT_TLS_ONLY",
+    "SSL_EXT_DTLS_ONLY",
+    "SSL_EXT_TLS_IMPLEMENTATION_ONLY",
+    "SSL_EXT_SSL3_ALLOWED",
+    "SSL_EXT_TLS1_2_AND_BELOW_ONLY",
+    "SSL_EXT_TLS1_3_ONLY",
+    "SSL_EXT_IGNORE_ON_RESUMPTION",
+    "SSL_EXT_CLIENT_HELLO",
+    "SSL_EXT_TLS1_2_SERVER_HELLO",
+    "SSL_EXT_TLS1_3_SERVER_HELLO",
+    "SSL_EXT_TLS1_3_ENCRYPTED_EXTENSIONS",
+    "SSL_EXT_TLS1_3_HELLO_RETRY_REQUEST",
+    "SSL_EXT_TLS1_3_CERTIFICATE",
+    "SSL_EXT_TLS1_3_NEW_SESSION_TICKET",
+    "SSL_EXT_TLS1_3_CERTIFICATE_REQUEST",
     "Error",
     "WantReadError",
     "WantWriteError",
@@ -139,6 +154,8 @@ __all__ = [
     "Context",
     "Connection",
     "X509VerificationCodes",
+    "CustomExtError",
+    "extension_supported",
 ]
 
 
@@ -262,6 +279,23 @@ SSL_CB_CONNECT_LOOP = _lib.SSL_CB_CONNECT_LOOP
 SSL_CB_CONNECT_EXIT = _lib.SSL_CB_CONNECT_EXIT
 SSL_CB_HANDSHAKE_START = _lib.SSL_CB_HANDSHAKE_START
 SSL_CB_HANDSHAKE_DONE = _lib.SSL_CB_HANDSHAKE_DONE
+
+# Custom Extension Contexts
+SSL_EXT_TLS_ONLY = _lib.SSL_EXT_TLS_ONLY
+SSL_EXT_DTLS_ONLY = _lib.SSL_EXT_DTLS_ONLY
+SSL_EXT_TLS_IMPLEMENTATION_ONLY = _lib.SSL_EXT_TLS_IMPLEMENTATION_ONLY
+SSL_EXT_SSL3_ALLOWED = _lib.SSL_EXT_SSL3_ALLOWED
+SSL_EXT_TLS1_2_AND_BELOW_ONLY = _lib.SSL_EXT_TLS1_2_AND_BELOW_ONLY
+SSL_EXT_TLS1_3_ONLY = _lib.SSL_EXT_TLS1_3_ONLY
+SSL_EXT_IGNORE_ON_RESUMPTION = _lib.SSL_EXT_IGNORE_ON_RESUMPTION
+SSL_EXT_CLIENT_HELLO = _lib.SSL_EXT_CLIENT_HELLO
+SSL_EXT_TLS1_2_SERVER_HELLO = _lib.SSL_EXT_TLS1_2_SERVER_HELLO
+SSL_EXT_TLS1_3_SERVER_HELLO = _lib.SSL_EXT_TLS1_3_SERVER_HELLO
+SSL_EXT_TLS1_3_ENCRYPTED_EXTENSIONS = _lib.SSL_EXT_TLS1_3_ENCRYPTED_EXTENSIONS
+SSL_EXT_TLS1_3_HELLO_RETRY_REQUEST = _lib.SSL_EXT_TLS1_3_HELLO_RETRY_REQUEST
+SSL_EXT_TLS1_3_CERTIFICATE = _lib.SSL_EXT_TLS1_3_CERTIFICATE
+SSL_EXT_TLS1_3_NEW_SESSION_TICKET = _lib.SSL_EXT_TLS1_3_NEW_SESSION_TICKET
+SSL_EXT_TLS1_3_CERTIFICATE_REQUEST = _lib.SSL_EXT_TLS1_3_CERTIFICATE_REQUEST
 
 
 class X509VerificationCodes:
@@ -445,6 +479,94 @@ class _CallbackExceptionHelper:
             except Error:
                 pass
             raise self._problems.pop(0)
+
+
+class CustomExtError(Error):
+    """
+    An error used to return fatal handshake alert codes from the custom
+    extension callbacks.
+    """
+    def __init__(self, al):
+        self.al = al
+
+
+class _CustomExtAddHelper(_CallbackExceptionHelper):
+    def __init__(self, callback):
+        _CallbackExceptionHelper.__init__(self)
+
+        if callback is None:
+            self.callback = _ffi.NULL
+            self.free_callback = _ffi.NULL
+            return
+
+        @wraps(callback)
+        def wrapper(ssl, ext_type, context, out, outlen, x509, chainidx, al, add_arg):
+            conn = Connection._reverse_mapping[ssl]
+            try:
+                out_data = callback(conn, ext_type, context)
+                if out_data is None or out_data == 0:
+                    return 0  # Don't add the extension
+
+                ffi_out_data = _ffi.new("unsigned char[]", out_data)
+                conn._custom_ext_add_callback_args.add(ffi_out_data)
+                outlen[0] = len(out_data)
+                out[0] = ffi_out_data
+                return 1
+            except CustomExtError as e:
+                al[0] = e.al
+                return -1
+            except Exception as e:
+                self._problems.append(e)
+                al[0] = 2  # SSL_TLSEXT_ERR_ALERT_FATAL
+                return -1
+
+        self.callback = _ffi.callback(
+            ("int (*)(SSL *, unsigned int, unsigned int, const unsigned char **, "
+             "size_t *, X509 *, size_t, int *, void *)"),
+            wrapper
+        )
+
+        self.free_callback = _ffi.callback(
+            "void (*)(SSL *, unsigned int, unsigned int, const unsigned char *, void *)",
+            _CustomExtAddHelper.free_cb
+        )
+
+    @staticmethod
+    def free_cb(ssl, ext_type, context, out, add_arg):
+        conn = Connection._reverse_mapping[ssl]
+        conn._custom_ext_add_callback_args.remove(out)
+
+
+class _CustomExtParseHelper(_CallbackExceptionHelper):
+    def __init__(self, callback):
+        _CallbackExceptionHelper.__init__(self)
+
+        if callback is None:
+            self.callback = _ffi.NULL
+            return
+
+        @wraps(callback)
+        def wrapper(ssl, ext_type, context, inbuf, inlen, x509, chainidx, al, parse_arg):
+            conn = Connection._reverse_mapping[ssl]
+
+            inbytes = _ffi.buffer(inbuf, inlen)[:]
+
+            try:
+                callback(conn, ext_type, context, inbytes)
+                return 1
+            except CustomExtError as e:
+                al[0] = e.al
+                return -1
+            except Exception as e:
+                self._problems.append(e)
+                al[0] = 2  # SSL_TLSEXT_ERR_ALERT_FATAL
+                return -1
+
+        self.callback = _ffi.callback(
+            ("int (*)(SSL *, unsigned int, unsigned int, const unsigned char *, "
+             "size_t, X509 *, size_t, int *, void *)"),
+            wrapper
+        )
 
 
 class _VerifyHelper(_CallbackExceptionHelper):
@@ -785,6 +907,10 @@ _requires_keylog = _make_requires(
     getattr(_lib, "Cryptography_HAS_KEYLOG", None), "Key logging not available"
 )
 
+_requires_custom_ext = _make_requires(
+    _lib.Cryptography_HAS_CUSTOM_EXT, "Custom extensions not available"
+)
+
 
 class Session:
     """
@@ -855,7 +981,7 @@ class Context:
         self._ocsp_data = None
         self._cookie_generate_helper = None
         self._cookie_verify_helper = None
-
+        self._custom_ext_cb_helpers = []
         self.set_mode(_lib.SSL_MODE_ENABLE_PARTIAL_WRITE)
         self._ex_data = {}
         if version is not None:
@@ -1715,6 +1841,39 @@ class Context:
             self._cookie_verify_helper.callback,
         )
 
+    @_requires_custom_ext
+    def add_custom_ext(self, ext_type, context, add_cb, parse_cb):
+        """
+        Add a custom extension for a TLS agent.
+        :param ext_type: The extension type to add.
+        :param context: The Extension Context. Determines in which messages
+            the extension may appear.
+        :param add_cb: The add callback, or None. It will be invoked with two
+            arguments: the Connection, and ext_type. It must return a byte
+            string with the data to be included in ClientHello. It can return
+            None, in which case the extension won't be added. In case of an
+            error, it can throw SSL.CustomExtError to terminate the handshake
+            and return an alert code to the OpenSSL library. If this callback
+            is None, that is equivalent to a callback that returns the empty
+            string.
+        :param parse_cb: The parse callback, or None. It will be invoked with
+            three arguments: the Connection, ext_type, and a bytestring that
+            contains the extension data received in ServerHello. If the data
+            from the server is acceptable, it should return None. Otherwise
+            it should throw a SSL.CustomExtError to terminate the handshake
+            with an alert code. If this callback is None, this is equivalent to
+            a callback that always accepts the server data.
+        """
+        add_helper = _CustomExtAddHelper(add_cb)
+        parse_helper = _CustomExtParseHelper(parse_cb)
+        rc = _lib.SSL_CTX_add_custom_ext(
+            self._context, ext_type, context,
+            add_helper.callback, add_helper.free_callback, _ffi.NULL,
+            parse_helper.callback, _ffi.NULL)
+        _openssl_assert(rc == 1)
+        self._custom_ext_cb_helpers.append(add_helper)
+        self._custom_ext_cb_helpers.append(parse_helper)
+
     def set_ex_data(self, idx, data):
         """
         Set application-specific data for this Context to be retrieved by get_ex_data
@@ -1745,6 +1904,15 @@ class Context:
             return None
         return self._ex_data.get(idx)
 
+@_requires_custom_ext
+def extension_supported(ext_type):
+    """
+    :return: 1 if the extension ext_type is handled internally by OpenSSL
+        and 0 otherwise.
+    """
+    return _lib.SSL_extension_supported(ext_type)
+
+
 class Connection:
     _reverse_mapping = WeakValueDictionary()
 
@@ -1774,6 +1942,11 @@ class Connection:
         # after the callback returns, so we have to hang them somewhere to
         # avoid them getting freed.
         self._alpn_select_callback_args = None
+
+        # References to strings used for custom extensions negotiation. We need
+        # to keep references to them so that they're not freed while the native
+        # code is using them.
+        self._custom_ext_add_callback_args = set([])
 
         # Reference the verify_callback of the Context. This ensures that if
         # set_verify is called again after the SSL object has been created we
@@ -1827,6 +2000,8 @@ class Connection:
             self._context._alpn_select_helper.raise_if_problem()
         if self._context._ocsp_helper is not None:
             self._context._ocsp_helper.raise_if_problem()
+        for custom_ext_helper in self._context._custom_ext_cb_helpers:
+            custom_ext_helper.raise_if_problem()
 
         error = _lib.SSL_get_error(ssl, result)
         if error == _lib.SSL_ERROR_WANT_READ:
