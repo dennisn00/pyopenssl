@@ -609,6 +609,30 @@ class _VerifyHelper(_CallbackExceptionHelper):
         )
 
 
+class _MessageHelper(_CallbackExceptionHelper):
+    """
+    Wrap a callback such that it can be used as a message
+    callback.
+    """
+
+    def __init__(self, callback):
+        _CallbackExceptionHelper.__init__(self)
+
+        @wraps(callback)
+        def wrapper(write_p, version, content_type, buf, buf_len, ssl, arg):
+            try:
+                msg = _ffi.buffer(buf, buf_len)[:]
+                callback(write_p, version, content_type, msg, arg)
+            except Exception as e:
+                self._problems.append(e)
+            finally:
+                return None
+
+        self.callback = _ffi.callback(
+            "void (*)(int, int, int, const void *, size_t, SSL *, void *)", wrapper
+        )
+
+
 NO_OVERLAPPING_PROTOCOLS = object()
 
 
@@ -982,6 +1006,8 @@ class Context:
         self._cookie_generate_helper = None
         self._cookie_verify_helper = None
         self._custom_ext_cb_helpers = []
+        self._message_helper = None
+        self._message_callback = None
         self.set_mode(_lib.SSL_MODE_ENABLE_PARTIAL_WRITE)
         self._ex_data = {}
         if version is not None:
@@ -1840,6 +1866,13 @@ class Context:
             self._context,
             self._cookie_verify_helper.callback,
         )
+
+    def set_msg_callback(self, callback):
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+        self._message_helper = _MessageHelper(callback)
+        self._message_callback = self._message_helper.callback
+        _lib.SSL_CTX_set_msg_callback(self._context, self._message_callback)
 
     @_requires_custom_ext
     def add_custom_ext(self, ext_type, context, add_cb, parse_cb):
