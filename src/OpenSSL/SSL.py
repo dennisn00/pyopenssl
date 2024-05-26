@@ -2633,6 +2633,10 @@ class Connection:
         """
         _lib.SSL_set_connect_state(self._ssl)
 
+    def is_server(self):
+        """:return: True if Context is working in Server Mode, False otherwise"""
+        return _lib.SSL_is_server(self._ssl)
+
     def get_session(self):
         """
         Returns the Session currently used.
