@@ -14,8 +14,8 @@ pyOpenSSL -- A Python wrapper around the OpenSSL library
    :alt: Test coverage
 
 **Note:** This fork of pyOpenSSL wraps additional functionality from OpenSSL.
-This requires my fork of the cryptography library (dennisn00/cryptography) to be installed in pip.
-I recommend 
+This requires my fork of the cryptography library (`dennisn00/cryptography <https://github.com/dennisn00/cryptography>`_) to be installed in pip.
+I recommend using a virtual environment.
 
 
 **Note:** The Python Cryptographic Authority **strongly suggests** the use of `pyca/cryptography`_
